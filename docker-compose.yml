@@ -9,6 +9,8 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    volumes:
+      - ./backend/transcriptions.db:/app/transcriptions.db
     environment:
       - PYTHONUNBUFFERED=1
     networks:

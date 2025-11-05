@@ -1,11 +1,13 @@
 import asyncio
 import logging
 import uuid
+import json
 from datetime import datetime
-from typing import Dict
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from typing import Dict, Optional
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
+from sqlalchemy.ext.asyncio import AsyncSession
 from models import (
     SonioxConfig,
     OpenAIConfig,
@@ -16,11 +18,22 @@ from models import (
 )
 from soniox_service import SonioxWebSocketService
 from openai_service import OpenAIService
+from database import get_db, init_db, TranscriptionSessionDB
+import crud
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Soniox Transcription Platform")
+
+
+# 启动事件：初始化数据库
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时初始化数据库"""
+    logger.info("Initializing database...")
+    await init_db()
+    logger.info("Database initialized successfully")
 
 # 配置 CORS
 app.add_middleware(
@@ -180,45 +193,95 @@ async def transcribe_websocket(websocket: WebSocket):
             session.segments.append(current_segment)
             session.status = "stopped"
 
+        # 保存到数据库
+        try:
+            async for db in get_db():
+                await crud.create_session(db, session)
+                logger.info(f"Session {session_id} saved to database")
+                break
+        except Exception as e:
+            logger.error(f"Error saving session to database: {str(e)}")
+
         logger.info(f"Transcription session ended: {session_id}")
 
 
 @app.get("/sessions")
-async def get_sessions():
-    """获取所有转录会话"""
+async def get_sessions(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取所有转录会话（从数据库）"""
+    sessions = await crud.get_sessions(db, skip=skip, limit=limit, search=search)
+    total = await crud.get_session_count(db, search=search)
+
     return {
+        "total": total,
+        "skip": skip,
+        "limit": limit,
         "sessions": [
             {
                 "session_id": session.session_id,
                 "title": session.title,
                 "created_at": session.created_at.isoformat(),
+                "updated_at": session.updated_at.isoformat(),
                 "status": session.status,
-                "segments_count": len(session.segments),
+                "duration_seconds": session.duration_seconds,
+                "speaker_count": session.speaker_count,
+                "word_count": session.word_count,
             }
-            for session in active_sessions.values()
+            for session in sessions
         ]
     }
 
 
 @app.get("/sessions/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
     """获取特定会话的详细信息"""
-    if session_id not in active_sessions:
+    # 优先从活跃会话中获取
+    if session_id in active_sessions:
+        session = active_sessions[session_id]
+        return session.model_dump()
+
+    # 从数据库获取
+    db_session = await crud.get_session(db, session_id)
+    if not db_session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = active_sessions[session_id]
-    return session.model_dump()
+    # 解析 segments
+    segments = json.loads(db_session.segments_json)
+
+    return {
+        "session_id": db_session.session_id,
+        "title": db_session.title,
+        "created_at": db_session.created_at.isoformat(),
+        "segments": segments,
+        "full_transcript": db_session.full_transcript,
+        "status": db_session.status,
+        "duration_seconds": db_session.duration_seconds,
+        "speaker_count": db_session.speaker_count,
+        "word_count": db_session.word_count,
+        "ai_summary": db_session.ai_summary,
+        "ai_action_items": db_session.ai_action_items,
+    }
 
 
 @app.post("/summarize")
-async def summarize_session(request: SummarizeRequest):
+async def summarize_session(request: SummarizeRequest, db: AsyncSession = Depends(get_db)):
     """总结会话内容（流式响应）"""
-    if request.session_id not in active_sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+    # 从活跃会话或数据库获取
+    transcript = None
+    if request.session_id in active_sessions:
+        session = active_sessions[request.session_id]
+        transcript = session.full_transcript
+    else:
+        db_session = await crud.get_session(db, request.session_id)
+        if not db_session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        transcript = db_session.full_transcript
 
-    session = active_sessions[request.session_id]
-
-    if not session.full_transcript:
+    if not transcript:
         raise HTTPException(status_code=400, detail="No transcript available")
 
     # 创建 OpenAI 服务
@@ -226,23 +289,35 @@ async def summarize_session(request: SummarizeRequest):
 
     # 流式返回总结
     async def generate():
-        async for chunk in openai_service.summarize(
-            session.full_transcript, request.prompt
-        ):
+        summary = ""
+        async for chunk in openai_service.summarize(transcript, request.prompt):
+            summary += chunk
             yield chunk
+
+        # 保存总结到数据库
+        try:
+            await crud.update_ai_summary(db, request.session_id, summary)
+        except Exception as e:
+            logger.error(f"Error saving summary: {str(e)}")
 
     return StreamingResponse(generate(), media_type="text/plain")
 
 
 @app.post("/question")
-async def answer_question(request: QuestionRequest):
+async def answer_question(request: QuestionRequest, db: AsyncSession = Depends(get_db)):
     """回答关于会话内容的问题（流式响应）"""
-    if request.session_id not in active_sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+    # 从活跃会话或数据库获取
+    transcript = None
+    if request.session_id in active_sessions:
+        session = active_sessions[request.session_id]
+        transcript = session.full_transcript
+    else:
+        db_session = await crud.get_session(db, request.session_id)
+        if not db_session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        transcript = db_session.full_transcript
 
-    session = active_sessions[request.session_id]
-
-    if not session.full_transcript:
+    if not transcript:
         raise HTTPException(status_code=400, detail="No transcript available")
 
     # 创建 OpenAI 服务
@@ -250,28 +325,135 @@ async def answer_question(request: QuestionRequest):
 
     # 流式返回回答
     async def generate():
-        async for chunk in openai_service.answer_question(
-            session.full_transcript, request.question
-        ):
+        async for chunk in openai_service.answer_question(transcript, request.question):
             yield chunk
 
     return StreamingResponse(generate(), media_type="text/plain")
 
 
 @app.delete("/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, db: AsyncSession = Depends(get_db)):
     """删除会话"""
-    if session_id not in active_sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-
     # 如果会话还在活跃，先关闭连接
     if session_id in active_soniox_connections:
         soniox_service = active_soniox_connections[session_id]
         await soniox_service.close()
         del active_soniox_connections[session_id]
 
-    del active_sessions[session_id]
+    if session_id in active_sessions:
+        del active_sessions[session_id]
+
+    # 从数据库删除
+    deleted = await crud.delete_session(db, session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     return {"message": "Session deleted"}
+
+
+@app.get("/sessions/{session_id}/export")
+async def export_session(
+    session_id: str,
+    format: str = Query("txt", regex="^(txt|json|markdown)$"),
+    db: AsyncSession = Depends(get_db)
+):
+    """导出会话内容"""
+    # 获取会话
+    db_session = await crud.get_session(db, session_id)
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 解析 segments
+    segments = json.loads(db_session.segments_json)
+
+    if format == "txt":
+        # 纯文本格式
+        content = f"Title: {db_session.title}\n"
+        content += f"Date: {db_session.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        content += f"Duration: {db_session.duration_seconds:.1f}s\n"
+        content += f"Speakers: {db_session.speaker_count}\n"
+        content += "\n" + "=" * 50 + "\n\n"
+
+        for seg in segments:
+            content += f"[{seg['speaker']}]\n"
+            content += f"{seg['text']}\n\n"
+
+        return Response(
+            content=content,
+            media_type="text/plain",
+            headers={"Content-Disposition": f"attachment; filename={session_id}.txt"}
+        )
+
+    elif format == "json":
+        # JSON 格式
+        data = {
+            "session_id": db_session.session_id,
+            "title": db_session.title,
+            "created_at": db_session.created_at.isoformat(),
+            "duration_seconds": db_session.duration_seconds,
+            "speaker_count": db_session.speaker_count,
+            "word_count": db_session.word_count,
+            "segments": segments,
+            "full_transcript": db_session.full_transcript,
+            "ai_summary": db_session.ai_summary,
+            "ai_action_items": db_session.ai_action_items,
+        }
+
+        return Response(
+            content=json.dumps(data, indent=2, ensure_ascii=False),
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename={session_id}.json"}
+        )
+
+    elif format == "markdown":
+        # Markdown 格式
+        content = f"# {db_session.title}\n\n"
+        content += f"**Date:** {db_session.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        content += f"**Duration:** {db_session.duration_seconds:.1f}s\n"
+        content += f"**Speakers:** {db_session.speaker_count}\n"
+        content += f"**Words:** {db_session.word_count}\n\n"
+
+        if db_session.ai_summary:
+            content += "## AI Summary\n\n"
+            content += f"{db_session.ai_summary}\n\n"
+
+        if db_session.ai_action_items:
+            content += "## Action Items\n\n"
+            content += f"{db_session.ai_action_items}\n\n"
+
+        content += "## Transcript\n\n"
+
+        for seg in segments:
+            content += f"### {seg['speaker']}\n\n"
+            content += f"{seg['text']}\n\n"
+
+        return Response(
+            content=content,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f"attachment; filename={session_id}.md"}
+        )
+
+
+@app.put("/sessions/{session_id}/title")
+async def update_session_title(
+    session_id: str,
+    title: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """更新会话标题"""
+    from sqlalchemy import update
+
+    result = await db.execute(
+        update(TranscriptionSessionDB)
+        .where(TranscriptionSessionDB.session_id == session_id)
+        .values(title=title, updated_at=datetime.utcnow())
+    )
+
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await db.commit()
+    return {"message": "Title updated"}
 
 
 if __name__ == "__main__":

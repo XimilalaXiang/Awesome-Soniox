@@ -8,6 +8,10 @@
 - 👥 **发言人识别**：自动识别和区分不同的发言人
 - 🌊 **流式显示**：实时显示转录内容，低延迟体验
 - 🤖 **AI 智能助手**：支持 OpenAI 兼容 API 进行会议总结和问答
+- 💾 **云端存储**：自动保存所有转录记录到服务器数据库
+- 📚 **历史记录**：查看、搜索和管理所有历史会话
+- 📤 **多格式导出**：支持导出为 TXT、JSON、Markdown 格式
+- 🔍 **全文搜索**：在历史记录中快速搜索关键词
 - 🎨 **现代化 UI**：简洁的黑白配色，专业的用户界面
 - 📱 **响应式设计**：支持桌面和移动设备访问
 - 🐳 **容器化部署**：支持 Docker 一键部署
@@ -17,6 +21,7 @@
 ### 后端
 - **框架**：FastAPI (Python 3.11+)
 - **实时通信**：WebSocket
+- **数据库**：SQLite (SQLAlchemy ORM)
 - **语音识别**：Soniox V3 API
 - **AI 集成**：OpenAI 兼容 API
 
@@ -173,6 +178,42 @@ npm run build
 **自定义提问：**
 在输入框中输入任何问题，AI 会基于转录内容回答。
 
+### 5. 查看历史记录
+
+所有的转录会话会自动保存到服务器数据库中。
+
+1. 点击右上角的"历史记录"按钮
+2. 浏览所有历史会话
+3. 使用搜索框查找特定内容
+4. 点击"查看详情"查看完整转录
+
+**历史记录功能：**
+- 📊 显示会话统计信息（时长、发言人数、字数等）
+- 🔍 全文搜索功能
+- ✏️ 编辑会话标题
+- 🗑️ 删除不需要的会话
+- 📄 分页浏览
+
+### 6. 导出转录内容
+
+支持多种格式导出：
+
+**导出方式：**
+1. 在历史记录页面，点击会话的"导出"按钮
+2. 或在会话详情页面点击"导出"按钮
+3. 选择导出格式：
+   - **TXT**：纯文本格式，适合快速阅读
+   - **JSON**：结构化数据，包含完整的元数据和时间戳
+   - **Markdown**：格式化文档，包含 AI 总结和待办事项
+
+**导出内容包含：**
+- 会话标题和日期
+- 完整转录内容（按发言人分组）
+- 时间戳信息
+- AI 总结（如果已生成）
+- AI 待办事项（如果已生成）
+- 统计信息
+
 ## 🔧 高级配置
 
 ### 修改端口
@@ -189,6 +230,38 @@ services:
 **本地开发：**
 - 后端：修改 `backend/main.py` 中的端口参数
 - 前端：修改 `frontend/vite.config.js` 中的 `server.port`
+
+### 数据库备份
+
+转录数据存储在 SQLite 数据库文件 `backend/transcriptions.db` 中。
+
+**备份方法：**
+```bash
+# 停止服务
+docker-compose down
+
+# 备份数据库
+cp backend/transcriptions.db backend/transcriptions.db.backup
+
+# 或使用时间戳
+cp backend/transcriptions.db backend/transcriptions.db.$(date +%Y%m%d_%H%M%S)
+
+# 重启服务
+docker-compose up -d
+```
+
+**恢复数据：**
+```bash
+docker-compose down
+cp backend/transcriptions.db.backup backend/transcriptions.db
+docker-compose up -d
+```
+
+**定时备份（可选）：**
+```bash
+# 添加到 crontab
+0 2 * * * cp /path/to/backend/transcriptions.db /path/to/backup/transcriptions.db.$(date +\%Y\%m\%d)
+```
 
 ### 启用 HTTPS
 

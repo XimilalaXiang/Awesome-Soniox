@@ -6,10 +6,10 @@ const api = axios.create({
 })
 
 /**
- * 获取所有会话
+ * 获取所有会话（支持分页和搜索）
  */
-export async function getSessions() {
-  const response = await api.get('/sessions')
+export async function getSessions(params = {}) {
+  const response = await api.get('/sessions', { params })
   return response.data
 }
 
@@ -27,6 +27,23 @@ export async function getSession(sessionId) {
 export async function deleteSession(sessionId) {
   const response = await api.delete(`/sessions/${sessionId}`)
   return response.data
+}
+
+/**
+ * 更新会话标题
+ */
+export async function updateSessionTitle(sessionId, title) {
+  const response = await api.put(`/sessions/${sessionId}/title`, null, {
+    params: { title }
+  })
+  return response.data
+}
+
+/**
+ * 导出会话
+ */
+export function exportSession(sessionId, format = 'txt') {
+  window.location.href = `/api/sessions/${sessionId}/export?format=${format}`
 }
 
 /**
