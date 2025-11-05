@@ -1,0 +1,71 @@
+<template>
+  <div class="min-h-screen bg-white">
+    <!-- 头部 -->
+    <header class="border-b-4 border-black bg-white">
+      <div class="container mx-auto px-4 py-6">
+        <div class="flex items-center justify-between">
+          <div>
+            <h1 class="text-3xl font-bold">Soniox 实时转录平台</h1>
+            <p class="text-sm text-gray-600 mt-1">
+              基于 Soniox V3 的专业语音转文字解决方案
+            </p>
+          </div>
+          <button
+            @click="showConfig = !showConfig"
+            class="btn-secondary"
+          >
+            <svg class="w-5 h-5 inline mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
+            </svg>
+            配置
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 主内容 -->
+    <main class="container mx-auto px-4 py-8">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- 左侧：配置和控制 -->
+        <div class="lg:col-span-1 space-y-6">
+          <!-- 配置面板 -->
+          <ConfigPanel v-if="showConfig" />
+
+          <!-- 录音控制 -->
+          <RecordingControls />
+
+          <!-- AI 助手 -->
+          <AIAssistant />
+        </div>
+
+        <!-- 右侧：转录显示 -->
+        <div class="lg:col-span-2">
+          <TranscriptDisplay />
+        </div>
+      </div>
+    </main>
+
+    <!-- 底部 -->
+    <footer class="border-t-4 border-black bg-white mt-12">
+      <div class="container mx-auto px-4 py-6 text-center text-sm text-gray-600">
+        <p>
+          Powered by
+          <a href="https://soniox.com" target="_blank" class="font-semibold hover:underline">
+            Soniox V3
+          </a>
+          | 实时语音识别与转录
+        </p>
+      </div>
+    </footer>
+  </div>
+</template>
+
+<script setup>
+import { ref } from 'vue'
+import ConfigPanel from '@/components/ConfigPanel.vue'
+import RecordingControls from '@/components/RecordingControls.vue'
+import TranscriptDisplay from '@/components/TranscriptDisplay.vue'
+import AIAssistant from '@/components/AIAssistant.vue'
+
+const showConfig = ref(true)
+</script>
