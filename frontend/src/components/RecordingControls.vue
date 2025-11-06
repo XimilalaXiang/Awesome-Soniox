@@ -138,7 +138,8 @@ async function startRecording() {
       throw new Error('无法开始录音')
     }
   } catch (err) {
-    error.value = `启动失败: ${err.message}`
+    const msg = (err && err.message) ? err.message : String(err || '未知错误')
+    error.value = `启动失败: ${msg}`
     console.error(err)
   }
 }

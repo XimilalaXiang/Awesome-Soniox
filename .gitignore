@@ -43,3 +43,7 @@ logs/
 
 # Docker
 .dockerignore
+
+# Databases (do not commit SQLite files)
+backend/**/*.db
+**/transcriptions.db*

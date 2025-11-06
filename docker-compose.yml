@@ -10,9 +10,10 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./backend/transcriptions.db:/app/transcriptions.db
+      - ./backend/data:/app/data
     environment:
       - PYTHONUNBUFFERED=1
+      - DATABASE_URL=sqlite+aiosqlite:///./data/transcriptions.db
     networks:
       - soniox-network
     healthcheck:

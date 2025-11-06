@@ -5,7 +5,8 @@ from datetime import datetime
 import os
 
 # 数据库配置
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./transcriptions.db")
+# 默认使用容器内相对路径 ./data/transcriptions.db，便于通过目录卷挂载
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/transcriptions.db")
 
 # 创建异步引擎
 engine = create_async_engine(

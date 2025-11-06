@@ -20,7 +20,7 @@ class TranscriptionSegment(BaseModel):
     text: str
     start_time: float
     end_time: float
-    tokens: List[TranscriptionToken]
+    tokens: List[TranscriptionToken] = Field(default_factory=list)
 
 
 class TranscriptionSession(BaseModel):
@@ -28,7 +28,7 @@ class TranscriptionSession(BaseModel):
     session_id: str
     title: str
     created_at: datetime
-    segments: List[TranscriptionSegment] = []
+    segments: List[TranscriptionSegment] = Field(default_factory=list)
     full_transcript: str = ""
     status: str = "active"  # active, stopped, completed
 

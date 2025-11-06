@@ -15,8 +15,11 @@ export class TranscriptionWebSocket {
    */
   async connect() {
     return new Promise((resolve, reject) => {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsUrl = `${protocol}//${window.location.hostname}:${window.location.port || 8000}/ws/transcribe`
+      // 构造相对当前站点的 WS 地址，避免跨端口/HTTPS 混合内容问题
+      const isHttps = window.location.protocol === 'https:'
+      const origin = window.location.origin
+      const wsOrigin = origin.replace(/^http/, isHttps ? 'wss' : 'ws')
+      const wsUrl = `${wsOrigin}/ws/transcribe`
 
       this.ws = new WebSocket(wsUrl)
 
@@ -47,14 +50,15 @@ export class TranscriptionWebSocket {
         }
       }
 
-      this.ws.onerror = (error) => {
-        console.error('WebSocket error:', error)
-        this.callbacks.onError?.(error)
-        reject(error)
+      this.ws.onerror = (event) => {
+        console.error('WebSocket error:', event)
+        const err = new Error('WebSocket 连接失败，请检查后端是否运行以及网络/代理设置')
+        this.callbacks.onError?.(err)
+        reject(err)
       }
 
-      this.ws.onclose = () => {
-        console.log('WebSocket closed')
+      this.ws.onclose = (e) => {
+        console.log('WebSocket closed', e?.code, e?.reason)
         this.callbacks.onDisconnected?.()
       }
     })
