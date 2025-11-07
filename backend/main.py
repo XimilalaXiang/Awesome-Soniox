@@ -111,19 +111,24 @@ async def transcribe_websocket(websocket: WebSocket):
                         current_segment = TranscriptionSegment(
                             speaker=speaker,
                             text="",
-                            start_time=token["start_ms"],
-                            end_time=token["end_ms"],
+                            start_time=token.get("start_ms", 0.0),
+                            end_time=token.get("end_ms", 0.0),
                             tokens=[],
                         )
 
-                    # 添加 token 到当前 segment
-                    current_segment.tokens.append(token)
-                    current_segment.text += token["text"]
-                    current_segment.end_time = token["end_ms"]
+                    # 仅当 token 为最终（is_final=True）时，纳入持久化/全文
+                    if token.get("is_final"):
+                        current_segment.tokens.append(token)
+                        current_segment.text += token.get("text", "")
+                        current_segment.end_time = token.get("end_ms", current_segment.end_time)
+                        session.full_transcript += token.get("text", "")
 
-                    # 如果是 final token，更新完整转录
-                    if token["is_final"]:
-                        session.full_transcript += token["text"]
+                        # 若检测到句末标记（endpoint 或 finalize），落段并重置
+                        if token.get("text") in ("<end>", "<fin>"):
+                            if current_segment:
+                                session.segments.append(current_segment)
+                            current_segment = None
+                            current_speaker = None
 
                 # 发送给客户端
                 await websocket.send_json(message)

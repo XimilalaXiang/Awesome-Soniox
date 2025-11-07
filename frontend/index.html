@@ -5,6 +5,31 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Soniox 实时转录平台</title>
+    <script>
+      (function () {
+        try {
+          if (typeof window !== 'undefined' && typeof window.WebSocket !== 'undefined') {
+            const OriginalWebSocket = window.WebSocket;
+            function PatchedWebSocket(url, protocols) {
+              try {
+                if (typeof url === 'string') {
+                  url = url.replace(/^wsss:\/\//, 'wss://')
+                           .replace(/^https:\/\//, 'wss://')
+                           .replace(/^http:\/\//, 'ws://');
+                }
+              } catch (_) {}
+              return new OriginalWebSocket(url, protocols);
+            }
+            PatchedWebSocket.prototype = OriginalWebSocket.prototype;
+            PatchedWebSocket.OPEN = OriginalWebSocket.OPEN;
+            PatchedWebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
+            PatchedWebSocket.CLOSING = OriginalWebSocket.CLOSING;
+            PatchedWebSocket.CLOSED = OriginalWebSocket.CLOSED;
+            window.WebSocket = PatchedWebSocket;
+          }
+        } catch (_) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

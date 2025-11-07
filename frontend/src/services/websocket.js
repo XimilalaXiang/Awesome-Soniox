@@ -8,6 +8,7 @@ export class TranscriptionWebSocket {
     this.ws = null
     this.mediaRecorder = null
     this.audioStream = null
+    this.isPaused = false
   }
 
   /**
@@ -15,11 +16,13 @@ export class TranscriptionWebSocket {
    */
   async connect() {
     return new Promise((resolve, reject) => {
-      // 构造相对当前站点的 WS 地址，避免跨端口/HTTPS 混合内容问题
-      const isHttps = window.location.protocol === 'https:'
-      const origin = window.location.origin
-      const wsOrigin = origin.replace(/^http/, isHttps ? 'wss' : 'ws')
-      const wsUrl = `${wsOrigin}/ws/transcribe`
+      // 构造当前站点的 WS 地址（HTTPS -> WSS，HTTP -> WS）
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+      let wsUrl = `${wsProtocol}://${window.location.host}/ws/transcribe`
+      // 防呆：若外层代理或历史代码导致出现 "wsss"，在此强制修正
+      if (wsUrl.startsWith('wsss://')) {
+        wsUrl = 'wss://' + wsUrl.slice('wsss://'.length)
+      }
 
       this.ws = new WebSocket(wsUrl)
 
@@ -69,22 +72,37 @@ export class TranscriptionWebSocket {
    */
   async startRecording() {
     try {
-      // 请求麦克风权限
-      this.audioStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
-      })
+      // 若已有音频流（例如从暂停恢复），则复用；否则请求权限
+      if (!this.audioStream) {
+        this.audioStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            sampleRate: 16000,
+            echoCancellation: true,
+            noiseSuppression: true,
+          },
+        })
+      } else {
+        // 重新启用被暂停的轨道
+        this.audioStream.getTracks().forEach((t) => (t.enabled = true))
+      }
 
-      // 创建 MediaRecorder
+      // 创建 MediaRecorder（带 MIME 类型回退，以兼容不同浏览器）
       const mimeType = this.getSupportedMimeType()
-      this.mediaRecorder = new MediaRecorder(this.audioStream, {
-        mimeType: mimeType,
-        audioBitsPerSecond: 128000,
-      })
+      try {
+        const options = mimeType
+          ? { mimeType: mimeType, audioBitsPerSecond: 128000 }
+          : { audioBitsPerSecond: 128000 }
+        this.mediaRecorder = new MediaRecorder(this.audioStream, options)
+      } catch (e) {
+        // 再次回退：不带任何 options
+        try {
+          this.mediaRecorder = new MediaRecorder(this.audioStream)
+        } catch (e2) {
+          this.callbacks.onError?.(e2)
+          return false
+        }
+      }
 
       // 当有音频数据可用时，发送到服务器
       this.mediaRecorder.ondataavailable = (event) => {
@@ -97,6 +115,7 @@ export class TranscriptionWebSocket {
       this.mediaRecorder.start(100)
 
       console.log('Recording started')
+      this.isPaused = false
       return true
     } catch (error) {
       console.error('Error starting recording:', error)
@@ -124,6 +143,35 @@ export class TranscriptionWebSocket {
     }
 
     console.log('Recording stopped')
+  }
+
+  /**
+   * 暂停录音（保持会话与音频流，停止送帧）
+   */
+  pause() {
+    try {
+      if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+        this.mediaRecorder.stop()
+      }
+      // 关闭数据上送但保留轨道用于恢复
+      if (this.audioStream) {
+        this.audioStream.getTracks().forEach((t) => (t.enabled = false))
+      }
+      this.isPaused = true
+      console.log('Recording paused')
+    } catch (e) {
+      console.error('Pause failed', e)
+    }
+  }
+
+  /**
+   * 恢复录音（复用音频流，重新创建 MediaRecorder）
+   */
+  async resume() {
+    if (this.isPaused) {
+      return await this.startRecording()
+    }
+    return false
   }
 
   /**

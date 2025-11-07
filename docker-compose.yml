@@ -7,8 +7,8 @@ services:
       dockerfile: Dockerfile
     container_name: soniox-backend
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
       - ./backend/data:/app/data
     environment:
@@ -29,7 +29,7 @@ services:
     container_name: soniox-frontend
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "10081:80"
     depends_on:
       - backend
     networks:

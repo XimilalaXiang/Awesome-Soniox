@@ -19,6 +19,8 @@ class SonioxWebSocketService:
         self.ws_connection: Optional[websockets.WebSocketClientProtocol] = None
         self.is_connected = False
         self.session_id: Optional[str] = None
+        self._last_audio_ts: float = 0.0
+        self._keepalive_task: Optional[asyncio.Task] = None
 
     async def connect(self, on_message: Callable):
         """连接到 Soniox WebSocket API"""
@@ -40,6 +42,7 @@ class SonioxWebSocketService:
                 "audio_format": "auto",  # 自动检测音频格式
                 "enable_speaker_diarization": self.config.enable_speaker_diarization,
                 "enable_language_identification": self.config.enable_language_identification,
+                "enable_endpoint_detection": getattr(self.config, "enable_endpoint_detection", True),
             }
 
             if self.config.language_hints:
@@ -52,6 +55,9 @@ class SonioxWebSocketService:
 
             # 启动消息接收循环
             asyncio.create_task(self._receive_messages(on_message))
+
+            # 启动 keepalive 任务（在无音频分片时维持会话与上下文）
+            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
             return True
 
@@ -107,6 +113,25 @@ class SonioxWebSocketService:
             logger.error(f"Error receiving messages from Soniox: {str(e)}")
             self.is_connected = False
 
+    async def _keepalive_loop(self):
+        """在长时间静默时发送 keepalive 控制消息，避免会话因无音频而被关闭"""
+        try:
+            import time
+            while self.is_connected and self.ws_connection:
+                now = time.time()
+                # 若 15 秒未发送音频，则发送 keepalive
+                if now - self._last_audio_ts > 15:
+                    try:
+                        await self.ws_connection.send(json.dumps({"type": "keepalive"}))
+                        logger.debug("Sent keepalive to Soniox")
+                        # 避免高频发送
+                        self._last_audio_ts = now
+                    except Exception as e:
+                        logger.warning(f"Keepalive failed: {e}")
+                await asyncio.sleep(5)
+        except Exception as e:
+            logger.warning(f"Keepalive loop error: {e}")
+
     async def send_audio(self, audio_data: bytes):
         """发送音频数据到 Soniox"""
         if not self.is_connected or not self.ws_connection:
@@ -115,6 +140,12 @@ class SonioxWebSocketService:
 
         try:
             await self.ws_connection.send(audio_data)
+            # 记录最近发送音频时间戳
+            try:
+                import time
+                self._last_audio_ts = time.time()
+            except Exception:
+                pass
             return True
         except Exception as e:
             logger.error(f"Error sending audio to Soniox: {str(e)}")
@@ -146,3 +177,7 @@ class SonioxWebSocketService:
             finally:
                 self.is_connected = False
                 self.ws_connection = None
+                # 结束 keepalive 任务
+                if self._keepalive_task and not self._keepalive_task.done():
+                    self._keepalive_task.cancel()
+                    self._keepalive_task = None

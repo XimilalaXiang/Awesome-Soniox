@@ -15,38 +15,36 @@
       ref="transcriptContainer"
       class="transcript-container min-h-[400px] max-h-[600px] overflow-y-auto border-2 border-black rounded-lg p-4"
     >
-      <div v-if="!store.hasTranscript" class="text-center text-gray-400 py-12">
+      <div v-if="!store.hasTranscript && !currentText" class="text-center text-gray-400 py-12">
         等待开始录音...
       </div>
 
-      <div v-else>
-        <!-- 已完成的片段 -->
-        <div
-          v-for="(segment, index) in store.segments"
-          :key="index"
-          class="transcript-segment fade-in"
-          :style="{ borderLeftColor: getSpeakerColor(segment.speaker) }"
-        >
-          <div class="speaker-label" :style="{ color: getSpeakerColor(segment.speaker) }">
-            {{ segment.speaker }}
-          </div>
-          <div class="transcript-text">{{ segment.text }}</div>
-          <div class="text-xs text-gray-400 mt-1">
-            {{ formatTime(segment.start_time) }} - {{ formatTime(segment.end_time) }}
-          </div>
+      <!-- 已完成的片段 -->
+      <div
+        v-for="(segment, index) in store.segments"
+        :key="index"
+        class="transcript-segment fade-in"
+        :style="{ borderLeftColor: getSpeakerColor(segment.speaker) }"
+      >
+        <div class="speaker-label" :style="{ color: getSpeakerColor(segment.speaker) }">
+          {{ segment.speaker }}
         </div>
+        <div class="transcript-text">{{ segment.text }}</div>
+        <div class="text-xs text-gray-400 mt-1">
+          {{ formatTime(segment.start_time) }} - {{ formatTime(segment.end_time) }}
+        </div>
+      </div>
 
-        <!-- 当前正在识别的片段 -->
-        <div v-if="currentText" class="transcript-segment border-dashed opacity-70">
-          <div class="speaker-label">{{ currentSpeaker || 'Speaker 0' }}</div>
-          <div class="transcript-text">
-            {{ currentText }}
-            <span class="loading-dots ml-2">
-              <span></span>
-              <span class="animation-delay-100"></span>
-              <span class="animation-delay-200"></span>
-            </span>
-          </div>
+      <!-- 当前正在识别的片段（即使没有历史片段也要显示） -->
+      <div v-if="currentText" class="transcript-segment border-dashed opacity-70">
+        <div class="speaker-label">{{ currentSpeaker || 'Speaker 0' }}</div>
+        <div class="transcript-text">
+          {{ currentText }}
+          <span class="loading-dots ml-2">
+            <span></span>
+            <span class="animation-delay-100"></span>
+            <span class="animation-delay-200"></span>
+          </span>
         </div>
       </div>
     </div>

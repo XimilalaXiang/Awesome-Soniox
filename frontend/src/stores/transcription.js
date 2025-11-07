@@ -19,6 +19,7 @@ export const useTranscriptionStore = defineStore('transcription', () => {
     model: 'stt-rt-v3',
     enable_speaker_diarization: true,
     enable_language_identification: false,
+    enable_endpoint_detection: true,
     language_hints: []
   })
 

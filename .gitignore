@@ -41,6 +41,9 @@ Thumbs.db
 *.log
 logs/
 
+# Local temp transcripts
+temp_text*
+
 # Docker
 .dockerignore
 

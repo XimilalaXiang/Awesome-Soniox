@@ -12,7 +12,7 @@
             }"
           ></div>
           <span class="text-sm font-medium">
-            {{ store.isRecording ? '录音中' : '未录音' }}
+            {{ store.isRecording ? (isPaused ? '已暂停' : '录音中') : '未录音' }}
           </span>
         </div>
 
@@ -55,14 +55,17 @@
 
         <button
           v-if="store.isRecording"
-          @click="finalize"
+          @click="togglePause"
           class="btn-secondary"
-          title="立即完成当前转录"
+          :title="isPaused ? '继续录音' : '暂停录音'"
         >
-          <svg class="w-5 h-5 inline mr-2" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+          <svg v-if="!isPaused" class="w-5 h-5 inline mr-2" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M6 4a1 1 0 00-1 1v10a1 1 0 102 0V5a1 1 0 00-1-1zm7 0a1 1 0 00-1 1v10a1 1 0 102 0V5a1 1 0 00-1-1z" clip-rule="evenodd"/>
           </svg>
-          完成当前句
+          <svg v-else class="w-5 h-5 inline mr-2" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M4 10l12-6v12L4 10zm3 0l7 3.5V6.5L7 10z" clip-rule="evenodd"/>
+          </svg>
+          {{ isPaused ? '继续录音' : '暂停录音' }}
         </button>
 
         <button
@@ -92,6 +95,32 @@ const error = ref('')
 const recordingTime = ref(0)
 let recordingTimer = null
 let wsClient = null
+const isPaused = ref(false)
+// 维护每个说话人的最终文本缓冲，避免被非最终结果覆盖
+const finalBySpeaker = new Map()
+// 记录当前话段的起止时间（按 speaker）
+const utterStartMs = new Map()
+const utterEndMs = new Map()
+// 跨帧保存的非最终预览文本（按 speaker），用于在说话人切换时也能落段
+const previewBySpeaker = new Map()
+// 当前活跃说话人（用于检测说话人切换）
+let activeSpeaker = null
+
+// 合并显示文本：移除 finalText 与 preview 之间可能的重叠，避免重复
+function mergeWithOverlap(finalText, preview) {
+  const a = finalText || ''
+  const b = preview || ''
+  if (!a || !b) return a + b
+  const maxCheck = Math.min(a.length, 80) // 限制重叠检查窗口
+  // 从可能的最大重叠开始向前查找
+  for (let n = maxCheck; n > 0; n--) {
+    const suffix = a.slice(-n)
+    if (b.startsWith(suffix)) {
+      return a + b.slice(n)
+    }
+  }
+  return a + b
+}
 
 const canStart = computed(() => {
   return store.sonioxConfig.api_key && !store.isRecording
@@ -133,9 +162,15 @@ async function startRecording() {
 
     if (started) {
       store.isRecording = true
+      isPaused.value = false
       startTimer()
     } else {
-      throw new Error('无法开始录音')
+      // 优先使用底层回调已写入的错误信息
+      const fallback = '无法开始录音'
+      const msg = (error.value && typeof error.value === 'string')
+        ? error.value.replace(/^错误:\s*/, '')
+        : fallback
+      throw new Error(msg || fallback)
     }
   } catch (err) {
     const msg = (err && err.message) ? err.message : String(err || '未知错误')
@@ -148,13 +183,25 @@ function stopRecording() {
   if (wsClient) {
     wsClient.stopRecording()
     store.isRecording = false
+    isPaused.value = false
     stopTimer()
   }
 }
 
-function finalize() {
-  if (wsClient) {
-    wsClient.finalize()
+async function togglePause() {
+  if (!wsClient) return
+  try {
+    if (!isPaused.value) {
+      wsClient.pause()
+      isPaused.value = true
+    } else {
+      const resumed = await wsClient.resume()
+      if (resumed) {
+        isPaused.value = false
+      }
+    }
+  } catch (e) {
+    console.error(e)
   }
 }
 
@@ -166,49 +213,74 @@ function clearTranscript() {
 
 function handleTranscription(data) {
   const tokens = data.tokens
-  let currentSpeaker = null
-  let currentSegmentText = ''
+  // 本次帧的临时预览文本（按 speaker）
+  const nonFinalPreview = new Map()
+  let lastSpeakerInFrame = null
+
+  // 将指定说话人的缓冲落为一个段落
+  function commitSpeakerSegment(speaker) {
+    if (!speaker) return
+    const finalText = (finalBySpeaker.get(speaker) || '').replace(/<(end|fin)>/g, '')
+    const text = finalText
+    if (text) {
+      store.addSegment({
+        speaker,
+        text,
+        start_time: utterStartMs.get(speaker) ?? 0,
+        end_time: utterEndMs.get(speaker) ?? 0,
+      })
+    }
+    // 清理该说话人的缓冲
+    finalBySpeaker.set(speaker, '')
+    previewBySpeaker.set(speaker, '')
+    utterStartMs.delete(speaker)
+    utterEndMs.delete(speaker)
+  }
 
   for (const token of tokens) {
     const speaker = token.speaker || 'Speaker 0'
+    lastSpeakerInFrame = speaker
 
-    // 如果发言人改变，创建新的 segment
-    if (speaker !== currentSpeaker) {
-      if (currentSpeaker !== null && currentSegmentText) {
-        // 保存之前的 segment
-        store.addSegment({
-          speaker: currentSpeaker,
-          text: currentSegmentText,
-          start_time: token.start_ms,
-          end_time: token.end_ms,
-        })
-      }
-
-      currentSpeaker = speaker
-      currentSegmentText = token.text
-    } else {
-      currentSegmentText += token.text
+    // 说话人切换：先将上一个活跃说话人的内容（final+preview）落段，确保历史可见
+    if (activeSpeaker && speaker !== activeSpeaker) {
+      commitSpeakerSegment(activeSpeaker)
     }
+    if (!activeSpeaker) activeSpeaker = speaker
+    if (speaker !== activeSpeaker) activeSpeaker = speaker
 
-    // 更新当前 segment（用于实时显示）
-    if (!token.is_final) {
-      store.currentSegment = {
-        speaker: currentSpeaker,
-        text: currentSegmentText,
+    if (token.is_final) {
+      // 记录起始时间
+      if (!utterStartMs.has(speaker)) utterStartMs.set(speaker, token.start_ms)
+      // 追加到最终缓冲
+      const prev = finalBySpeaker.get(speaker) || ''
+      finalBySpeaker.set(speaker, prev + (token.text || ''))
+      utterEndMs.set(speaker, token.end_ms)
+
+      // 若到达句末标记，落段并清空缓冲
+      if (token.text === '<end>' || token.text === '<fin>') {
+        commitSpeakerSegment(speaker)
+        store.currentSegment = null
       }
+    } else {
+      nonFinalPreview.set(speaker, (nonFinalPreview.get(speaker) || '') + (token.text || ''))
+      // 更新结束时间（用于预估显示）
+      if (token.end_ms !== undefined) utterEndMs.set(speaker, token.end_ms)
     }
   }
 
-  // 如果所有 tokens 都是 final，清空当前 segment
-  const allFinal = tokens.every(t => t.is_final)
-  if (allFinal && currentSpeaker && currentSegmentText) {
-    store.addSegment({
-      speaker: currentSpeaker,
-      text: currentSegmentText,
-      start_time: tokens[0].start_ms,
-      end_time: tokens[tokens.length - 1].end_ms,
-    })
-    store.currentSegment = null
+  // 更新实时预览：最终缓冲 + 本帧非最终
+  if (lastSpeakerInFrame) {
+    const finalText = finalBySpeaker.get(lastSpeakerInFrame) || ''
+    const preview = nonFinalPreview.get(lastSpeakerInFrame) || ''
+    store.currentSegment = {
+      speaker: lastSpeakerInFrame,
+      text: mergeWithOverlap(finalText, preview),
+    }
+  }
+
+  // 将本帧的非最终预览缓存到跨帧 Map，用于说话人切换时也能落段
+  for (const [spk, pv] of nonFinalPreview.entries()) {
+    previewBySpeaker.set(spk, pv)
   }
 }
 

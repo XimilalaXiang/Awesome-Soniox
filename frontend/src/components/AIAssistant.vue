@@ -69,7 +69,7 @@
             </div>
             思考中...
           </div>
-          <div v-else class="whitespace-pre-wrap">{{ aiResponse }}</div>
+          <div v-else v-html="aiHtml"></div>
           <div v-if="isProcessing" class="inline-block">
             <span class="animate-pulse">▋</span>
           </div>
@@ -80,14 +80,27 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useTranscriptionStore } from '@/stores/transcription'
 import { summarizeSession, askQuestion } from '@/services/api'
+import MarkdownIt from 'markdown-it'
+import DOMPurify from 'dompurify'
 
 const store = useTranscriptionStore()
 const isProcessing = ref(false)
 const aiResponse = ref('')
 const customQuestion = ref('')
+
+// Markdown 渲染
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
+const aiHtml = computed(() => {
+  try {
+    const html = md.render(aiResponse.value || '')
+    return DOMPurify.sanitize(html)
+  } catch (e) {
+    return (aiResponse.value || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
+})
 
 async function summarize() {
   await processRequest('请总结以下会议内容的要点，以清晰的列表形式呈现：')

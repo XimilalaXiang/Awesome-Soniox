@@ -39,6 +39,7 @@ class SonioxConfig(BaseModel):
     model: str = "stt-rt-v3"
     enable_speaker_diarization: bool = True
     enable_language_identification: bool = False
+    enable_endpoint_detection: bool = True
     language_hints: List[str] = []
 
 
