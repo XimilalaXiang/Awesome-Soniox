@@ -91,13 +91,13 @@
           <!-- AI 总结 -->
           <div v-if="session.ai_summary" class="card">
             <h3 class="text-lg font-bold mb-3">📝 AI 总结</h3>
-            <div class="text-sm whitespace-pre-wrap">{{ session.ai_summary }}</div>
+            <div class="text-sm" v-html="aiSummaryHtml"></div>
           </div>
 
           <!-- AI 待办事项 -->
           <div v-if="session.ai_action_items" class="card">
             <h3 class="text-lg font-bold mb-3">✅ 待办事项</h3>
-            <div class="text-sm whitespace-pre-wrap">{{ session.ai_action_items }}</div>
+            <div class="text-sm" v-html="aiActionItemsHtml"></div>
           </div>
 
           <!-- AI 助手 -->
@@ -155,7 +155,7 @@
                   </div>
                   思考中...
                 </div>
-                <div v-else class="whitespace-pre-wrap">{{ aiResponse }}</div>
+                <div v-else v-html="aiHtml"></div>
                 <div v-if="isProcessing" class="inline-block">
                   <span class="animate-pulse">▋</span>
                 </div>
@@ -212,10 +212,12 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useTranscriptionStore } from '@/stores/transcription'
 import { getSession, exportSession, summarizeSession } from '@/services/api'
+import MarkdownIt from 'markdown-it'
+import DOMPurify from 'dompurify'
 
 const route = useRoute()
 const store = useTranscriptionStore()
@@ -227,6 +229,33 @@ const showExportMenu = ref(false)
 const isProcessing = ref(false)
 const aiResponse = ref('')
 const customQuestion = ref('')
+
+// Markdown 渲染
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
+const aiHtml = computed(() => {
+  try {
+    const html = md.render(aiResponse.value || '')
+    return DOMPurify.sanitize(html)
+  } catch (e) {
+    return (aiResponse.value || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
+})
+const aiSummaryHtml = computed(() => {
+  try {
+    const html = md.render((session.value?.ai_summary) || '')
+    return DOMPurify.sanitize(html)
+  } catch (e) {
+    return ((session.value?.ai_summary) || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
+})
+const aiActionItemsHtml = computed(() => {
+  try {
+    const html = md.render((session.value?.ai_action_items) || '')
+    return DOMPurify.sanitize(html)
+  } catch (e) {
+    return ((session.value?.ai_action_items) || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
+})
 
 // 发言人颜色
 const speakerColors = [
