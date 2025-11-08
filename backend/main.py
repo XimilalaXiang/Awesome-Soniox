@@ -2,7 +2,8 @@ import asyncio
 import logging
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
+import os, hmac, hashlib, base64
 from typing import Dict, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,14 +19,212 @@ from models import (
 )
 from soniox_service import SonioxWebSocketService
 from openai_service import OpenAIService
-from database import get_db, init_db, TranscriptionSessionDB
+from database import get_db, init_db, TranscriptionSessionDB, SettingDB, async_session_maker
 import crud
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Soniox Transcription Platform")
+# ============== 简单密码登录（Cookie） ==============
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
+ACCESS_PASSWORD = os.getenv("ACCESS_PASSWORD", "")
+COOKIE_NAME = "auth_token"
+TOKEN_TTL_SECONDS = 60 * 60 * 12  # 12h
 
+
+def _sign(payload: str) -> str:
+    mac = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{base64.urlsafe_b64encode(payload.encode()).decode()}.{mac}"
+
+
+def _verify(token: str) -> bool:
+    try:
+        data_b64, mac = token.split(".", 1)
+        payload = base64.urlsafe_b64decode(data_b64.encode()).decode()
+        if hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest() != mac:
+            return False
+        parts = payload.split("|")
+        exp = 0
+        for p in parts:
+            if p.startswith("exp:"):
+                exp = int(p.split(":", 1)[1])
+        return int(datetime.utcnow().timestamp()) < exp
+    except Exception:
+        return False
+
+
+def _set_auth_cookie(response, ttl=TOKEN_TTL_SECONDS):
+    exp = int((datetime.utcnow() + timedelta(seconds=ttl)).timestamp())
+    payload = f"auth|exp:{exp}"
+    token = _sign(payload)
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        httponly=True,
+        secure=True,
+        samesite="Lax",
+        max_age=ttl,
+        path="/",
+    )
+
+
+def _clear_auth_cookie(response):
+    response.delete_cookie(COOKIE_NAME, path="/")
+
+def _random_salt() -> str:
+    return base64.urlsafe_b64encode(os.urandom(16)).decode()
+
+def _hash_password(password: str, salt: str) -> str:
+    digest = hashlib.sha256((salt + password).encode()).hexdigest()
+    return f"v1${salt}${digest}"
+
+def _verify_password(stored: str, password: str) -> bool:
+    try:
+        ver, salt, digest = stored.split("$", 2)
+        if ver != "v1":
+            return False
+        return hashlib.sha256((salt + password).encode()).hexdigest() == digest
+    except Exception:
+        return False
+
+async def _get_setting(key: str) -> Optional[str]:
+    async with async_session_maker() as session:
+        row = await session.get(SettingDB, key)
+        return row.value if row else None
+
+async def _set_setting(key: str, value: str) -> None:
+    async with async_session_maker() as session:
+        row = await session.get(SettingDB, key)
+        if row:
+            row.value = value
+        else:
+            row = SettingDB(key=key, value=value)
+            session.add(row)
+        await session.commit()
+
+async def _is_initialized() -> bool:
+    if ACCESS_PASSWORD:
+        return True
+    v = await _get_setting("password_hash")
+    return bool(v)
+
+
+@app.post("/auth/login")
+async def auth_login(body: dict):
+    from fastapi import Response, HTTPException
+    pwd = (body or {}).get("password", "")
+    # 若设置了环境变量密码，则优先使用（企业部署固定密码）
+    if ACCESS_PASSWORD:
+        if pwd != ACCESS_PASSWORD:
+            raise HTTPException(status_code=401, detail="Invalid password")
+    else:
+        stored = await _get_setting("password_hash")
+        if not stored or not _verify_password(stored, pwd):
+            raise HTTPException(status_code=401, detail="Invalid password")
+    resp = Response(content=json.dumps({"ok": True}), media_type="application/json")
+    _set_auth_cookie(resp)
+    return resp
+
+
+from fastapi import Request
+@app.get("/auth/status")
+async def auth_status(request: Request):
+    token = request.cookies.get(COOKIE_NAME)
+    setup_needed = not await _is_initialized()
+    return {"ok": bool(token) and _verify(token), "setup": setup_needed}
+
+
+@app.post("/auth/logout")
+async def auth_logout():
+    from fastapi import Response
+    resp = Response(content=json.dumps({"ok": True}), media_type="application/json")
+    _clear_auth_cookie(resp)
+    return resp
+
+@app.post("/auth/setup")
+async def auth_setup(body: dict):
+    from fastapi import Response, HTTPException
+    if ACCESS_PASSWORD:
+        raise HTTPException(status_code=400, detail="Setup disabled (configured by env)")
+    if await _is_initialized():
+        raise HTTPException(status_code=400, detail="Already initialized")
+    pwd = (body or {}).get("password", "")
+    if not pwd or len(pwd) < 4:
+        raise HTTPException(status_code=400, detail="Password too short")
+    salt = _random_salt()
+    stored = _hash_password(pwd, salt)
+    await _set_setting("password_hash", stored)
+    resp = Response(content=json.dumps({"ok": True}), media_type="application/json")
+    _set_auth_cookie(resp)
+    return resp
+
+def _require_auth(request: Request):
+    if not ACCESS_PASSWORD and asyncio.get_event_loop().is_running():
+        # 若未开启密码模式，但已初始化设置，则也要求登录
+        pass
+    token = request.cookies.get(COOKIE_NAME)
+    if ACCESS_PASSWORD and (not token or not _verify(token)):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+# 全局云端配置存取
+@app.get("/config")
+async def get_config(request: Request):
+    _require_auth(request)
+    soniox_cfg_raw = await _get_setting("soniox_config") or "{}"
+    openai_cfg_raw = await _get_setting("openai_config") or "{}"
+    soniox_key = await _get_setting("soniox_api_key")
+    openai_key = await _get_setting("openai_api_key")
+    try:
+        soniox_cfg = json.loads(soniox_cfg_raw) if soniox_cfg_raw else {}
+        openai_cfg = json.loads(openai_cfg_raw) if openai_cfg_raw else {}
+    except Exception:
+        soniox_cfg, openai_cfg = {}, {}
+    # 掩码返回：不回显密钥，仅返回 has_api_key 标记
+    soniox_cfg.pop("api_key", None)
+    openai_cfg.pop("api_key", None)
+    soniox_cfg["has_api_key"] = bool(soniox_key)
+    openai_cfg["has_api_key"] = bool(openai_key)
+    return {"soniox_config": soniox_cfg, "openai_config": openai_cfg}
+
+@app.put("/config")
+async def put_config(request: Request):
+    _require_auth(request)
+    body = await request.json()
+    soniox = body.get("soniox_config") or {}
+    openai = body.get("openai_config") or {}
+    # 验证（允许缺少 api_key）
+    try:
+        if soniox:
+            temp = dict(soniox)
+            if "api_key" not in temp or not temp.get("api_key"):
+                temp["api_key"] = "placeholder"
+            SonioxConfig(**temp)
+        if openai:
+            temp = dict(openai)
+            if "api_key" not in temp or not temp.get("api_key"):
+                temp["api_key"] = "placeholder"
+            OpenAIConfig(**temp)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # 保存（密钥分开存储；留空不更新；clear_* 为 true 时清空）
+    if soniox:
+        key = soniox.get("api_key")
+        if key:
+            await _set_setting("soniox_api_key", key)
+        if soniox.get("clear_api_key") is True:
+            await _set_setting("soniox_api_key", "")
+        soniox_slim = {k: v for k, v in soniox.items() if k not in ("api_key", "clear_api_key")}
+        await _set_setting("soniox_config", json.dumps(soniox_slim))
+    if openai:
+        key = openai.get("api_key")
+        if key:
+            await _set_setting("openai_api_key", key)
+        if openai.get("clear_api_key") is True:
+            await _set_setting("openai_api_key", "")
+        openai_slim = {k: v for k, v in openai.items() if k not in ("api_key", "clear_api_key")}
+        await _set_setting("openai_config", json.dumps(openai_slim))
+    return {"ok": True}
 
 # 启动事件：初始化数据库
 @app.on_event("startup")
@@ -63,6 +262,11 @@ async def transcribe_websocket(websocket: WebSocket):
     客户端首先发送 Soniox 配置，然后流式发送音频数据
     """
     await websocket.accept()
+    # 认证校验（基于 Cookie）
+    token = websocket.cookies.get(COOKIE_NAME)
+    if ACCESS_PASSWORD and (not token or not _verify(token)):
+        await websocket.close(code=4401)
+        return
     session_id = str(uuid.uuid4())
     soniox_service: SonioxWebSocketService = None
     current_segment: TranscriptionSegment = None
@@ -88,7 +292,16 @@ async def transcribe_websocket(websocket: WebSocket):
             return
 
         # 解析 Soniox 配置
-        soniox_config = SonioxConfig(**config_data["config"])
+        incoming_cfg = dict(config_data["config"])
+        if not incoming_cfg.get("api_key"):
+            # 若前端未回显/未发送密钥，则从服务器保存中补全
+            stored_key = await _get_setting("soniox_api_key")
+            if not stored_key:
+                await websocket.send_json({"type": "error", "error_message": "Missing Soniox API key"})
+                await websocket.close()
+                return
+            incoming_cfg["api_key"] = stored_key
+        soniox_config = SonioxConfig(**incoming_cfg)
 
         # 定义消息处理回调
         async def on_soniox_message(message):
@@ -306,8 +519,23 @@ async def summarize_session(request: SummarizeRequest, db: AsyncSession = Depend
     if not transcript:
         raise HTTPException(status_code=400, detail="No transcript available")
 
-    # 创建 OpenAI 服务
-    openai_service = OpenAIService(request.openai_config)
+    # 创建 OpenAI 服务（若未传 api_key 则使用服务器保存）
+    openai_cfg = request.openai_config
+    if not openai_cfg.api_key:
+        stored_key = await _get_setting("openai_api_key")
+        if stored_key:
+            # 尝试加载服务器保存的非密钥字段
+            raw = await _get_setting("openai_config") or "{}"
+            try:
+                base = json.loads(raw)
+            except Exception:
+                base = {}
+            openai_cfg = OpenAIConfig(
+                api_url=base.get("api_url", openai_cfg.api_url),
+                api_key=stored_key,
+                model=base.get("model", openai_cfg.model),
+            )
+    openai_service = OpenAIService(openai_cfg)
 
     # 流式返回总结
     async def generate():
@@ -342,8 +570,22 @@ async def answer_question(request: QuestionRequest, db: AsyncSession = Depends(g
     if not transcript:
         raise HTTPException(status_code=400, detail="No transcript available")
 
-    # 创建 OpenAI 服务
-    openai_service = OpenAIService(request.openai_config)
+    # 创建 OpenAI 服务（若未传 api_key 则使用服务器保存）
+    openai_cfg = request.openai_config
+    if not openai_cfg.api_key:
+        stored_key = await _get_setting("openai_api_key")
+        if stored_key:
+            raw = await _get_setting("openai_config") or "{}"
+            try:
+                base = json.loads(raw)
+            except Exception:
+                base = {}
+            openai_cfg = OpenAIConfig(
+                api_url=base.get("api_url", openai_cfg.api_url),
+                api_key=stored_key,
+                model=base.get("model", openai_cfg.model),
+            )
+    openai_service = OpenAIService(openai_cfg)
 
     # 流式返回回答
     async def generate():

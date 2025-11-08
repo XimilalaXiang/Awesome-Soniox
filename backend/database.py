@@ -25,6 +25,12 @@ async_session_maker = async_sessionmaker(
 # 基础模型
 Base = declarative_base()
 
+class SettingDB(Base):
+    """简单 Key-Value 配置表（用于首设密码等）"""
+    __tablename__ = "settings"
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False)
+
 
 class TranscriptionSessionDB(Base):
     """转录会话数据库模型"""
