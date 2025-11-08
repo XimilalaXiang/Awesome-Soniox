@@ -21,10 +21,12 @@ class SonioxWebSocketService:
         self.session_id: Optional[str] = None
         self._last_audio_ts: float = 0.0
         self._keepalive_task: Optional[asyncio.Task] = None
+        self._on_message_cb: Optional[Callable] = None
 
     async def connect(self, on_message: Callable):
         """连接到 Soniox WebSocket API"""
         try:
+            self._on_message_cb = on_message
             logger.info(f"Connecting to Soniox WebSocket: {self.SONIOX_WS_URL}")
 
             # 连接到 WebSocket
@@ -37,13 +39,19 @@ class SonioxWebSocketService:
 
             # 发送初始配置
             config_message = {
-                "api_key": self.config.api_key,
+                "api_key": (self.config.api_key or "").strip(),
                 "model": self.config.model,
-                "audio_format": "auto",  # 自动检测音频格式
+                # 音频格式：若指定则按指定；否则自动检测容器
+                "audio_format": self.config.audio_format or "auto",
                 "enable_speaker_diarization": self.config.enable_speaker_diarization,
                 "enable_language_identification": self.config.enable_language_identification,
                 "enable_endpoint_detection": getattr(self.config, "enable_endpoint_detection", True),
             }
+            if self.config.audio_format and self.config.audio_format.startswith("pcm"):
+                if self.config.sample_rate:
+                    config_message["sample_rate"] = self.config.sample_rate
+                if self.config.num_channels:
+                    config_message["num_channels"] = self.config.num_channels
 
             if self.config.language_hints:
                 config_message["language_hints"] = self.config.language_hints
@@ -72,6 +80,15 @@ class SonioxWebSocketService:
             async for message in self.ws_connection:
                 if isinstance(message, str):
                     data = json.loads(message)
+
+                    # 服务端错误透传给上游，便于前端提示与排查
+                    if data.get("error_code") is not None:
+                        await on_message({
+                            "type": "error",
+                            "error_code": data.get("error_code"),
+                            "error_message": data.get("error_message"),
+                        })
+                        break
 
                     # 处理转录结果
                     if "tokens" in data:
@@ -181,3 +198,16 @@ class SonioxWebSocketService:
                 if self._keepalive_task and not self._keepalive_task.done():
                     self._keepalive_task.cancel()
                     self._keepalive_task = None
+
+    async def reconfigure(self, audio_format: str, sample_rate: Optional[int], num_channels: Optional[int]) -> bool:
+        """关闭现有连接并以新的音频格式重连（用于前端 PCM 回退）"""
+        try:
+            await self.close()
+            self.config.audio_format = audio_format
+            self.config.sample_rate = sample_rate
+            self.config.num_channels = num_channels
+            # 以相同回调重连
+            return await self.connect(self._on_message_cb)
+        except Exception as e:
+            logger.error(f"Reconfigure failed: {e}")
+            return False

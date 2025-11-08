@@ -41,6 +41,10 @@ class SonioxConfig(BaseModel):
     enable_language_identification: bool = False
     enable_endpoint_detection: bool = True
     language_hints: List[str] = []
+    # 可选的原始音频格式配置（用于 PCM 回退）
+    audio_format: Optional[str] = None  # 例如: "pcm_s16le" 或 "auto"
+    sample_rate: Optional[int] = None
+    num_channels: Optional[int] = None
 
 
 class OpenAIConfig(BaseModel):

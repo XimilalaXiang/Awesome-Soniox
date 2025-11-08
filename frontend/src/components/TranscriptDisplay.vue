@@ -19,32 +19,32 @@
         等待开始录音...
       </div>
 
-      <!-- 已完成的片段 -->
-      <div
-        v-for="(segment, index) in store.segments"
-        :key="index"
-        class="transcript-segment fade-in"
-        :style="{ borderLeftColor: getSpeakerColor(segment.speaker) }"
-      >
-        <div class="speaker-label" :style="{ color: getSpeakerColor(segment.speaker) }">
-          {{ segment.speaker }}
+        <!-- 已完成的片段 -->
+        <div
+          v-for="(segment, index) in store.segments"
+          :key="index"
+          class="transcript-segment fade-in"
+          :style="{ borderLeftColor: getSpeakerColor(segment.speaker) }"
+        >
+          <div class="speaker-label" :style="{ color: getSpeakerColor(segment.speaker) }">
+            {{ segment.speaker }}
+          </div>
+          <div class="transcript-text">{{ segment.text }}</div>
+          <div class="text-xs text-gray-400 mt-1">
+            {{ formatTime(segment.start_time) }} - {{ formatTime(segment.end_time) }}
+          </div>
         </div>
-        <div class="transcript-text">{{ segment.text }}</div>
-        <div class="text-xs text-gray-400 mt-1">
-          {{ formatTime(segment.start_time) }} - {{ formatTime(segment.end_time) }}
-        </div>
-      </div>
 
       <!-- 当前正在识别的片段（即使没有历史片段也要显示） -->
-      <div v-if="currentText" class="transcript-segment border-dashed opacity-70">
-        <div class="speaker-label">{{ currentSpeaker || 'Speaker 0' }}</div>
-        <div class="transcript-text">
-          {{ currentText }}
-          <span class="loading-dots ml-2">
-            <span></span>
-            <span class="animation-delay-100"></span>
-            <span class="animation-delay-200"></span>
-          </span>
+        <div v-if="currentText" class="transcript-segment border-dashed opacity-70">
+          <div class="speaker-label">{{ currentSpeaker || 'Speaker 0' }}</div>
+          <div class="transcript-text">
+            {{ currentText }}
+            <span class="loading-dots ml-2">
+              <span></span>
+              <span class="animation-delay-100"></span>
+              <span class="animation-delay-200"></span>
+            </span>
         </div>
       </div>
     </div>

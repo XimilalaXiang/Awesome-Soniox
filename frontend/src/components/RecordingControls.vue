@@ -272,7 +272,7 @@ function handleTranscription(data) {
   if (lastSpeakerInFrame) {
     const finalText = finalBySpeaker.get(lastSpeakerInFrame) || ''
     const preview = nonFinalPreview.get(lastSpeakerInFrame) || ''
-    store.currentSegment = {
+      store.currentSegment = {
       speaker: lastSpeakerInFrame,
       text: mergeWithOverlap(finalText, preview),
     }

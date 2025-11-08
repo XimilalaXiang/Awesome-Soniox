@@ -40,8 +40,12 @@ export const useTranscriptionStore = defineStore('transcription', () => {
 
   // 方法
   function saveSonioxConfig(config) {
-    sonioxConfig.value = { ...config }
-    localStorage.setItem('soniox_api_key', config.api_key)
+    const normalized = {
+      ...config,
+      api_key: (config.api_key || '').trim().replace(/\s+/g, '')
+    }
+    sonioxConfig.value = normalized
+    localStorage.setItem('soniox_api_key', normalized.api_key)
   }
 
   function saveOpenAIConfig(config) {

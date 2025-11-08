@@ -137,6 +137,9 @@ async def transcribe_websocket(websocket: WebSocket):
                 await websocket.send_json(
                     {"type": "session_started", "session_id": session_id}
                 )
+            elif message["type"] == "error":
+                # 将 Soniox 错误原样转发给前端，便于客户端显示与排查
+                await websocket.send_json(message)
 
         # 连接到 Soniox
         soniox_service = SonioxWebSocketService(soniox_config)
@@ -180,6 +183,20 @@ async def transcribe_websocket(websocket: WebSocket):
                         {"type": "session_completed", "session_id": session_id}
                     )
                     break
+                elif data.get("command") == "set_format":
+                    fmt = data.get("audio_format")
+                    sr = data.get("sample_rate")
+                    ch = data.get("num_channels")
+                    ok = await soniox_service.reconfigure(fmt, sr, ch)
+                    await websocket.send_json(
+                        {
+                            "type": "reconfigured",
+                            "ok": ok,
+                            "audio_format": fmt,
+                            "sample_rate": sr,
+                            "num_channels": ch,
+                        }
+                    )
 
     except WebSocketDisconnect:
         logger.info(f"Client disconnected: {session_id}")
